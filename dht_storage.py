@@ -1,43 +1,16 @@
 import simpy
 import random
-import uuid
 import hashlib
-from dht_ring import Node as BaseNode  # Importer la classe de base de l'étape 1
+from dht_ring import Node  # Importation du code du premier fichier
 
-class StorageNode(BaseNode):
-    """Extension de la classe Node avec des capacités de stockage"""
-    
-    def __init__(self, env, node_id=None, bootstrap_node=None):
-        # Initialiser avec la classe parente
+class StorageNode(Node):
+    def __init__(self, env, node_id, bootstrap_node=None):
         super().__init__(env, node_id, bootstrap_node)
-        # Dictionnaire pour stocker les données (clé -> valeur)
-        self.data_store = {}
-        # Degré de réplication (données stockées sur N nœuds)
-        self.replication_degree = 3
-        
-    def compute_key_id(self, key):
-        """Calcule l'identifiant d'une clé dans l'espace d'identifiants des nœuds"""
-        # Utiliser le hash SHA-1 pour transformer la clé en identifiant
-        hash_obj = hashlib.sha1(str(key).encode())
-        # Convertir le hash en entier pour utiliser le même espace d'ID que les nœuds
-        return int(hash_obj.hexdigest(), 16) % (2**32)
-    
-    def is_responsible_for(self, key_id):
-        """Détermine si ce nœud est responsable d'une clé donnée"""
-        # Si nous sommes le seul nœud dans l'anneau, nous sommes responsables
-        if self.right_neighbor == self:
-            return True
-            
-        # Si nous sommes avant notre voisin de droite dans l'ordre des IDs
-        if self.node_id < self.right_neighbor.node_id:
-            # La clé est entre nous et notre voisin de droite
-            return self.node_id <= key_id < self.right_neighbor.node_id
-        else:
-            # L'anneau "boucle" autour de l'espace d'identifiants
-            return key_id >= self.node_id or key_id < self.right_neighbor.node_id
+        self.data_store = {}  # Stockage local des données
+        self.replicated_data = {}  # Données répliquées
     
     def run(self):
-        """Version étendue du processus principal pour traiter les messages de stockage"""
+        """Processus principal du nœud pour traiter les messages, étendu pour le stockage"""
         print(f"{self.env.now}: {self} démarre (avec stockage)")
         while True:
             message = yield self.messages.get()
@@ -46,9 +19,9 @@ class StorageNode(BaseNode):
             sender = message['sender']
             content = message['content']
             
-            # Gestion des messages d'étape 1 (join/leave)
+            # Traitement des messages de l'anneau de base
             if msg_type == 'JOIN_REQUEST':
-                # (code existant pour gérer le join - inchangé)
+                # Code existant de la classe Node
                 current = self
                 next_node = self.right_neighbor
                 
@@ -59,8 +32,6 @@ class StorageNode(BaseNode):
                         'left_neighbor': self, 
                         'right_neighbor': self
                     })
-                    # Transférer les données dont le nouveau nœud est responsable
-                    self.env.process(self.transfer_data_after_join(sender))
                     continue
                 
                 while True:
@@ -79,246 +50,178 @@ class StorageNode(BaseNode):
                     'right_neighbor': next_node
                 })
                 
-                # Planifier le transfert de données après le join
-                if current == self:
-                    self.env.process(self.transfer_data_after_join(sender))
+                # Transférer les données pertinentes au nouveau nœud
+                self.env.process(self.transfer_relevant_data(sender))
             
             elif msg_type == 'UPDATE_LEFT':
                 self.left_neighbor = content
                 print(f"{self.env.now}: {self} a mis à jour son voisin de gauche: {self.left_neighbor}")
-                # Vérifier si des données doivent être répliquées sur le nouveau voisin
-                self.env.process(self.replicate_data_to_neighbor(self.left_neighbor, 'left'))
+                
+                # Répliquer les données sur le nouveau voisin
+                self.env.process(self.replicate_data_to_neighbor(self.left_neighbor))
             
             elif msg_type == 'UPDATE_RIGHT':
                 self.right_neighbor = content
                 print(f"{self.env.now}: {self} a mis à jour son voisin de droite: {self.right_neighbor}")
-                # Vérifier si des données doivent être répliquées sur le nouveau voisin
-                self.env.process(self.replicate_data_to_neighbor(self.right_neighbor, 'right'))
+                
+                # Répliquer les données sur le nouveau voisin
+                self.env.process(self.replicate_data_to_neighbor(self.right_neighbor))
             
-            # Nouveaux types de messages pour l'étape 3 (stockage)
+            # Nouveaux types de messages pour le stockage
             elif msg_type == 'PUT_REQUEST':
                 key = content['key']
                 value = content['value']
-                original_sender = content.get('original_sender', sender)
-                is_replica = content.get('is_replica', False)
-                replication_count = content.get('replication_count', 0)
+                target_node = self.find_responsible_node(key)
                 
-                key_id = self.compute_key_id(key)
-                
-                if self.is_responsible_for(key_id) or is_replica:
-                    # Stocker la donnée localement
-                    self.data_store[key] = value
-                    print(f"{self.env.now}: {self} stocke la donnée {key}={value}" + 
-                          (" (réplique)" if is_replica else " (primaire)"))
+                if target_node == self:
+                    # Ce nœud est responsable du stockage
+                    self.store_data(key, value)
+                    print(f"{self.env.now}: {self} stocke la donnée {key}:{value}")
                     
-                    # Si c'est une demande originale (non réplique), commencer la réplication
-                    if not is_replica and replication_count < self.replication_degree - 1:
-                        # Répliquer vers la droite
-                        self.send_message(self.right_neighbor, 'PUT_REQUEST', {
-                            'key': key,
-                            'value': value,
-                            'original_sender': original_sender,
-                            'is_replica': True,
-                            'replication_count': replication_count + 1
-                        })
+                    # Répliquer sur les voisins
+                    self.send_message(self.left_neighbor, 'REPLICATE', {'key': key, 'value': value})
+                    self.send_message(self.right_neighbor, 'REPLICATE', {'key': key, 'value': value})
                     
-                    # Confirmer la mise en place
-                    if not is_replica:
-                        self.send_message(original_sender, 'PUT_RESPONSE', {
-                            'key': key,
-                            'success': True
-                        })
+                    # Confirmer au demandeur
+                    self.send_message(sender, 'PUT_CONFIRM', {'key': key})
                 else:
-                    # Transférer au voisin qui pourrait être responsable (routage)
-                    next_hop = self.find_next_hop_for_key(key_id)
-                    print(f"{self.env.now}: {self} transfère la demande PUT pour {key} à {next_hop}")
-                    
-                    self.send_message(next_hop, 'PUT_REQUEST', {
-                        'key': key,
-                        'value': value,
-                        'original_sender': original_sender
-                    })
-            
-            elif msg_type == 'PUT_RESPONSE':
-                # Recevoir la confirmation d'un PUT
-                key = content['key']
-                success = content['success']
-                print(f"{self.env.now}: {self} reçoit confirmation de PUT pour {key}: {'succès' if success else 'échec'}")
+                    # Transférer la demande vers le nœud responsable
+                    print(f"{self.env.now}: {self} transfère la demande PUT pour {key} vers {self.right_neighbor}")
+                    self.send_message(self.right_neighbor, 'PUT_REQUEST', content)
             
             elif msg_type == 'GET_REQUEST':
                 key = content['key']
-                original_sender = content.get('original_sender', sender)
+                target_node = self.find_responsible_node(key)
                 
-                key_id = self.compute_key_id(key)
-                
-                if self.is_responsible_for(key_id) or key in self.data_store:
-                    # Vérifier si nous avons la donnée
+                if target_node == self:
+                    # Ce nœud est responsable de la donnée
                     if key in self.data_store:
                         value = self.data_store[key]
-                        print(f"{self.env.now}: {self} a trouvé la donnée {key}={value}")
-                        
-                        self.send_message(original_sender, 'GET_RESPONSE', {
-                            'key': key,
-                            'value': value,
-                            'success': True
-                        })
+                        print(f"{self.env.now}: {self} fournit la donnée {key}:{value}")
+                        self.send_message(sender, 'GET_RESPONSE', {'key': key, 'value': value})
                     else:
-                        # Nous sommes responsables mais n'avons pas la donnée
-                        print(f"{self.env.now}: {self} est responsable de {key} mais n'a pas cette donnée")
-                        self.send_message(original_sender, 'GET_RESPONSE', {
-                            'key': key,
-                            'success': False,
-                            'error': 'Key not found'
-                        })
+                        print(f"{self.env.now}: {self} n'a pas trouvé la donnée {key}")
+                        self.send_message(sender, 'GET_RESPONSE', {'key': key, 'value': None})
                 else:
-                    # Transférer au nœud qui pourrait être responsable
-                    next_hop = self.find_next_hop_for_key(key_id)
-                    print(f"{self.env.now}: {self} transfère la demande GET pour {key} à {next_hop}")
-                    
-                    self.send_message(next_hop, 'GET_REQUEST', {
-                        'key': key,
-                        'original_sender': original_sender
-                    })
+                    # Transférer la demande vers le nœud responsable
+                    print(f"{self.env.now}: {self} transfère la demande GET pour {key} vers {self.right_neighbor}")
+                    self.send_message(self.right_neighbor, 'GET_REQUEST', content)
             
-            elif msg_type == 'GET_RESPONSE':
-                # Recevoir la réponse d'un GET
-                key = content['key']
-                success = content['success']
-                if success:
+            elif msg_type == 'GET_RESPONSE' or msg_type == 'PUT_CONFIRM':
+                # Simple affichage de la confirmation
+                if msg_type == 'GET_RESPONSE':
+                    key = content['key']
                     value = content['value']
-                    print(f"{self.env.now}: {self} reçoit la valeur {key}={value}")
+                    print(f"{self.env.now}: {self} a reçu la réponse GET pour {key}: {value}")
                 else:
-                    error = content.get('error', 'Unknown error')
-                    print(f"{self.env.now}: {self} reçoit une erreur pour GET {key}: {error}")
+                    print(f"{self.env.now}: {self} a reçu la confirmation PUT pour {content['key']}")
             
-            elif msg_type == 'TRANSFER_DATA_REQUEST':
-                # Recevoir une demande de transfert de données après un join
-                keys_to_transfer = []
-                for key in list(self.data_store.keys()):
-                    key_id = self.compute_key_id(key)
-                    if sender.is_responsible_for(key_id):
-                        keys_to_transfer.append(key)
-                
-                if keys_to_transfer:
-                    print(f"{self.env.now}: {self} transfère {len(keys_to_transfer)} clés à {sender}")
-                    for key in keys_to_transfer:
-                        # Envoyer les données au nouveau nœud
-                        self.send_message(sender, 'PUT_REQUEST', {
-                            'key': key,
-                            'value': self.data_store[key],
-                            'is_replica': False,
-                            'original_sender': self
-                        })
-                        
-                        # Si nous ne sommes plus dans la zone de réplication, supprimer la donnée
-                        if not self.is_in_replication_range(key_id, sender.node_id):
-                            del self.data_store[key]
-                            print(f"{self.env.now}: {self} supprime {key} (transféré à {sender})")
-                else:
-                    print(f"{self.env.now}: {self} n'a pas de données à transférer à {sender}")
+            elif msg_type == 'REPLICATE':
+                # Stocker localement une donnée répliquée
+                key = content['key']
+                value = content['value']
+                self.replicated_data[key] = value
+                print(f"{self.env.now}: {self} a répliqué la donnée {key}:{value}")
+            
+            elif msg_type == 'TRANSFER_DATA':
+                # Recevoir des données transférées d'un autre nœud
+                for key, value in content.items():
+                    self.data_store[key] = value
+                print(f"{self.env.now}: {self} a reçu {len(content)} données transférées")
     
-    def find_next_hop_for_key(self, key_id):
-        """Trouve le nœud suivant pour router une requête vers la clé donnée"""
-        # Stratégie simple de routage: si nous ne sommes pas responsables, transférer à droite
-        return self.right_neighbor
+    def generate_key_hash(self, key):
+        """Génère un hash pour une clé donnée"""
+        hash_object = hashlib.sha1(str(key).encode())
+        hash_hex = hash_object.hexdigest()
+        # Convertir en entier sur la même plage que les IDs des nœuds
+        hash_int = int(hash_hex, 16) % 100  # Même plage que les node_id (0-99)
+        return hash_int
     
-    def is_in_replication_range(self, key_id, responsible_node_id):
-        """Vérifie si ce nœud doit conserver une réplique pour la clé donnée"""
-        # Dans notre modèle simple, nous conservons des répliques sur le nœud responsable
-        # et ses voisins immédiats (gauche et droite)
-        if self.node_id == responsible_node_id:
-            return True
-        if self.left_neighbor.node_id == responsible_node_id:
-            return True
-        if self.right_neighbor.node_id == responsible_node_id:
-            return True
-        return False
-    
-    def transfer_data_after_join(self, new_node):
-        """Transfère les données au nouveau nœud après son join"""
-        # Attendre un moment pour que le nœud s'initialise complètement
-        yield self.env.timeout(2)
-        print(f"{self.env.now}: {self} vérifie s'il faut transférer des données à {new_node}")
-        self.send_message(new_node, 'TRANSFER_DATA_REQUEST', {})
-    
-    def replicate_data_to_neighbor(self, neighbor, direction):
-        """Réplique les données sur un nouveau voisin"""
-        # Attendre un moment pour que le nœud s'initialise
-        yield self.env.timeout(2)
-        print(f"{self.env.now}: {self} vérifie s'il faut répliquer des données sur {neighbor} ({direction})")
+    def find_responsible_node(self, key):
+        """Trouve le nœud responsable pour une clé donnée"""
+        key_hash = self.generate_key_hash(key)
         
-        # Pour chaque donnée, vérifier si elle doit être répliquée
-        for key, value in self.data_store.items():
-            key_id = self.compute_key_id(key)
-            responsible_node = self.find_responsible_node(key_id)
-            
-            # Si le voisin est dans la zone de réplication pour cette clé
-            if neighbor.is_in_replication_range(key_id, responsible_node.node_id):
-                self.send_message(neighbor, 'PUT_REQUEST', {
-                    'key': key,
-                    'value': value,
-                    'is_replica': True,
-                    'original_sender': self
-                })
-                print(f"{self.env.now}: {self} réplique {key}={value} sur {neighbor}")
-    
-    def find_responsible_node(self, key_id):
-        """Trouve le nœud responsable pour une clé donnée (approche simplifiée)"""
-        # Commencer par nous-mêmes
+        # Parcourir l'anneau pour trouver le nœud responsable
         current = self
-        
-        # Parcourir l'anneau jusqu'à trouver le responsable
-        while not current.is_responsible_for(key_id):
-            current = current.right_neighbor
-            # Éviter une boucle infinie
+        while True:
+            next_node = current.right_neighbor
+            
+            # Cas particulier: limite de l'anneau
+            if current.node_id > next_node.node_id and (key_hash > current.node_id or key_hash <= next_node.node_id):
+                return next_node
+            
+            # Cas standard: clé entre deux nœuds consécutifs
+            if current.node_id < key_hash <= next_node.node_id:
+                return next_node
+            
+            # Si la clé correspond exactement à ce nœud
+            if current.node_id == key_hash:
+                return current
+            
+            current = next_node
+            
+            # Si on a fait le tour complet
             if current == self:
-                return self
+                return self  # Ce nœud est le plus proche
+    
+    def store_data(self, key, value):
+        """Stocke une donnée localement"""
+        self.data_store[key] = value
+    
+    def transfer_relevant_data(self, new_node):
+        """Transfère les données pertinentes à un nouveau nœud"""
+        data_to_transfer = {}
         
-        return current
+        # Identifier les données dont le nouveau nœud est responsable
+        for key, value in list(self.data_store.items()):
+            responsible_node = self.find_responsible_node(key)
+            if responsible_node == new_node:
+                data_to_transfer[key] = value
+                del self.data_store[key]  # Ne plus stocker comme données principales
+                self.replicated_data[key] = value  # Mais garder comme réplique
+        
+        if data_to_transfer:
+            print(f"{self.env.now}: {self} transfère {len(data_to_transfer)} données à {new_node}")
+            self.send_message(new_node, 'TRANSFER_DATA', data_to_transfer)
+            
+        yield self.env.timeout(0)  # Transforme la méthode en générateur pour SimPy
+    
+    def replicate_data_to_neighbor(self, neighbor):
+        """Réplique les données pertinentes sur un voisin"""
+        for key, value in self.data_store.items():
+            self.send_message(neighbor, 'REPLICATE', {'key': key, 'value': value})
+        yield self.env.timeout(0)  # Transforme la méthode en générateur pour SimPy
+    
+    def leave(self):
+        """Méthode étendue pour gérer le transfert de données lors du départ"""
+        print(f"{self.env.now}: {self} quitte l'anneau et transfère ses données")
+        
+        # Transférer toutes les données primaires au voisin de droite
+        if self.data_store:
+            self.send_message(self.right_neighbor, 'TRANSFER_DATA', self.data_store)
+        
+        # Informer les voisins comme dans la classe de base
+        self.send_message(self.left_neighbor, 'UPDATE_RIGHT', self.right_neighbor)
+        self.send_message(self.right_neighbor, 'UPDATE_LEFT', self.left_neighbor)
+        
+        print(f"{self.env.now}: {self} a quitté l'anneau, {self.left_neighbor} et {self.right_neighbor} sont maintenant connectés")
 
-def put_data(env, node, key, value):
-    """Process pour mettre des données dans la DHT"""
-    print(f"{env.now}: Demande de PUT {key}={value} à partir de {node}")
-    key_id = node.compute_key_id(key)
-    
-    # Trouver le nœud responsable (approche simplifiée)
-    current = node
-    while not current.is_responsible_for(key_id):
-        next_hop = current.find_next_hop_for_key(key_id)
-        print(f"{env.now}: Routage de PUT {key} de {current} vers {next_hop}")
-        current = next_hop
-        yield env.timeout(1)  # Simulation du délai de routage
-    
-    # Envoyer la demande de PUT au nœud responsable
-    node.send_message(current, 'PUT_REQUEST', {
-        'key': key,
-        'value': value,
-        'original_sender': node
-    })
-    print(f"{env.now}: PUT {key}={value} envoyé au nœud responsable {current}")
 
-def get_data(env, node, key):
-    """Process pour récupérer des données de la DHT"""
-    print(f"{env.now}: Demande de GET {key} à partir de {node}")
-    key_id = node.compute_key_id(key)
-    
-    # Trouver le nœud responsable (approche simplifiée)
-    current = node
-    while not current.is_responsible_for(key_id):
-        next_hop = current.find_next_hop_for_key(key_id)
-        print(f"{env.now}: Routage de GET {key} de {current} vers {next_hop}")
-        current = next_hop
-        yield env.timeout(1)  # Simulation du délai de routage
-    
-    # Envoyer la demande de GET au nœud responsable
-    node.send_message(current, 'GET_REQUEST', {
-        'key': key,
-        'original_sender': node
-    })
-    print(f"{env.now}: GET {key} envoyé au nœud responsable {current}")
+def put_operation(env, node, key, value):
+    """Processus pour exécuter une opération PUT"""
+    print(f"{env.now}: Demande PUT {key}:{value} via {node}")
+    node.send_message(node, 'PUT_REQUEST', {'key': key, 'value': value})
+    yield env.timeout(0)  # Transforme la fonction en générateur pour SimPy
 
-def run_storage_simulation(duration=200):
-    """Simulation principale pour tester le stockage dans la DHT"""
+
+def get_operation(env, node, key):
+    """Processus pour exécuter une opération GET"""
+    print(f"{env.now}: Demande GET {key} via {node}")
+    node.send_message(node, 'GET_REQUEST', {'key': key})
+    yield env.timeout(0)  # Transforme la fonction en générateur pour SimPy
+
+
+def run_simulation(duration=100, max_nodes=10):
     env = simpy.Environment()
     
     # Créer le premier nœud (nœud bootstrap)
@@ -330,92 +233,78 @@ def run_storage_simulation(duration=200):
     
     # Processus pour ajouter des nœuds périodiquement
     def node_creator():
-        for i in range(1, 10):
-            yield env.timeout(random.randint(10, 20))
-            new_node = StorageNode(env, bootstrap_node=random.choice(nodes))
+        next_node_id = 1
+        while next_node_id < max_nodes:
+            yield env.timeout(random.randint(5, 15))
+            
+            new_node = StorageNode(env, node_id=next_node_id, bootstrap_node=random.choice(nodes))
             nodes.append(new_node)
             env.process(new_node.run())
-            print(f"{env.now}: Nouveau nœud {new_node} a été créé")
+            
+            next_node_id += 1
     
     # Processus pour faire quitter des nœuds périodiquement
     def node_remover():
-        # Attendre que plusieurs nœuds soient créés
-        yield env.timeout(50)
         while True:
-            yield env.timeout(random.randint(30, 50))
-            if len(nodes) > 4:  # Garder au moins 4 nœuds
+            yield env.timeout(random.randint(20, 30))
+            if len(nodes) > 3:  # Garder au moins quelques nœuds
                 node = random.choice(nodes[1:])  # Ne pas supprimer le nœud initial
                 nodes.remove(node)
                 node.leave()
-                print(f"{env.now}: Nœud {node} a quitté l'anneau")
     
-    # Processus pour tester le stockage et la récupération de données
-    def data_operations():
-        # Attendre la création de quelques nœuds
-        yield env.timeout(30)
-        
-        # Générer quelques données aléatoires
-        data_keys = [f"key_{i}" for i in range(1, 11)]
-        data_values = [f"value_{random.randint(100, 999)}" for _ in range(10)]
-        
-        # Effectuer des opérations PUT
-        for i in range(10):
-            key = data_keys[i]
-            value = data_values[i]
-            node = random.choice(nodes)
-            yield env.process(put_data(env, node, key, value))
-            yield env.timeout(random.randint(5, 15))
-        
-        # Attendre un peu avant de récupérer les données
-        yield env.timeout(20)
-        
-        # Effectuer des opérations GET
-        for i in range(10):
-            key = random.choice(data_keys)
-            node = random.choice(nodes)
-            yield env.process(get_data(env, node, key))
-            yield env.timeout(random.randint(5, 15))
-        
-        # Tester la récupération après un changement de topologie
-        yield env.timeout(50)  # Attendre que des nœuds quittent/rejoignent
-        
-        # Essayer de récupérer les mêmes données
-        for i in range(10):
-            key = random.choice(data_keys)
-            node = random.choice(nodes)
-            yield env.process(get_data(env, node, key))
-            yield env.timeout(random.randint(5, 15))
+    # Variable pour suivre le nombre de données créées (partagée entre les processus)
+    next_data_id = 0
     
-    # Lancer tous les processus
+    # Processus pour effectuer des opérations PUT périodiquement
+    def data_creator():
+        nonlocal next_data_id
+        while True:
+            yield env.timeout(random.randint(2, 8))
+            if nodes:
+                # Choisir un nœud aléatoire pour initier la demande
+                node = random.choice(nodes)
+                # Créer une clé et une valeur
+                key = f"key-{next_data_id}"
+                value = f"value-{next_data_id}"
+                # Lancer l'opération PUT
+                env.process(put_operation(env, node, key, value))
+                next_data_id += 1
+    
+    # Processus pour effectuer des opérations GET périodiquement
+    def data_retriever():
+        nonlocal next_data_id
+        yield env.timeout(20)  # Attendre un peu que des données soient stockées
+        while True:
+            yield env.timeout(random.randint(5, 10))
+            if nodes and next_data_id > 0:
+                # Choisir un nœud aléatoire pour initier la demande
+                node = random.choice(nodes)
+                # Demander une clé existante avec une haute probabilité
+                key = f"key-{random.randint(0, max(0, next_data_id - 1))}"
+                # Lancer l'opération GET
+                env.process(get_operation(env, node, key))
+    
+    # Lancer les processus
     env.process(node_creator())
     env.process(node_remover())
-    env.process(data_operations())
+    env.process(data_creator())
+    env.process(data_retriever())
     
     # Exécuter la simulation
     env.run(until=duration)
     
-    # Afficher l'état final
-    print("\nÉtat final de l'anneau:")
+    # Afficher un résumé des données stockées
+    print("\nRésumé des données stockées:")
+    total_primary = 0
+    total_replicated = 0
     for node in nodes:
-        print(f"Nœud: {node} - Données stockées: {node.data_store}")
+        primary_count = len(node.data_store)
+        replicated_count = len(node.replicated_data)
+        total_primary += primary_count
+        total_replicated += replicated_count
+        print(f"{node} stocke {primary_count} données primaires et {replicated_count} répliques")
     
-    # Vérifier l'intégrité de l'anneau
-    print("\nVérification de l'intégrité de l'anneau:")
-    current = nodes[0]
-    start_id = current.node_id
-    print(f"Nœud: {current} - Voisins: gauche={current.left_neighbor}, droite={current.right_neighbor}")
-    current = current.right_neighbor
-    
-    visited = 1
-    while current.node_id != start_id and visited < len(nodes):
-        print(f"Nœud: {current} - Voisins: gauche={current.left_neighbor}, droite={current.right_neighbor}")
-        current = current.right_neighbor
-        visited += 1
-    
-    if visited != len(nodes):
-        print(f"ATTENTION: L'anneau semble incomplet! Seulement {visited} nœuds visités sur {len(nodes)}")
-    else:
-        print(f"Anneau intègre: {visited} nœuds visités")
+    print(f"\nTotal: {total_primary} données primaires et {total_replicated} répliques dans le système")
 
 if __name__ == "__main__":
-    run_storage_simulation(300)
+    run_simulation(200, max_nodes=10)

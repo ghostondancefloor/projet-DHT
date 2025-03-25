@@ -1,12 +1,10 @@
 import simpy
 import random
-import uuid
 
 class Node:
-    def __init__(self, env, node_id=None, bootstrap_node=None):
+    def __init__(self, env, node_id, bootstrap_node=None):
         self.env = env
-        # Générer un UUID si non fourni
-        self.node_id = node_id if node_id is not None else uuid.uuid4().int % (2**32)
+        self.node_id = node_id
         self.left_neighbor = self
         self.right_neighbor = self
         self.messages = simpy.Store(env)
@@ -115,7 +113,7 @@ class Node:
 
 
 # Simulation
-def run_simulation(duration=100):
+def run_simulation(duration=100, max_nodes=10):
     env = simpy.Environment()
     
     # Créer le premier nœud (nœud bootstrap)
@@ -125,13 +123,18 @@ def run_simulation(duration=100):
     # Liste pour suivre tous les nœuds
     nodes = [first_node]
     
-    # Processus pour ajouter des nœuds périodiquement
+    # Processus pour ajouter des nœuds périodiquement avec des IDs séquentiels
     def node_creator():
-        for i in range(1, 10):
+        next_node_id = 1
+        while next_node_id < max_nodes:
             yield env.timeout(random.randint(5, 15))
-            new_node = Node(env, bootstrap_node=random.choice(nodes))
+            
+            # Créer un nouveau nœud avec l'ID séquentiel suivant
+            new_node = Node(env, node_id=next_node_id, bootstrap_node=nodes[-1])
             nodes.append(new_node)
             env.process(new_node.run())
+            
+            next_node_id += 1
     
     # Processus pour faire quitter des nœuds périodiquement
     def node_remover():
@@ -167,4 +170,4 @@ def run_simulation(duration=100):
         print(f"ATTENTION: L'anneau semble incomplet! Seulement {visited} nœuds visités sur {len(nodes)}")
 
 if __name__ == "__main__":
-    run_simulation(150)
+    run_simulation(2000, max_nodes=100)
