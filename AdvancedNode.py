@@ -1,9 +1,11 @@
-from StorageNode import StorageNode 
+from StorageNode import StorageNode
 
 class AdvancedNode(StorageNode):
-    def __init__(self, env, node_id):
-        super().__init__(env, node_id)
+    def init(self, env, node_id, all_nodes=None, mode='triche'):
+        super().__init__(env, node_id)  
         self.long_links = {}
+        self.mode = mode  
+        self.all_nodes = all_nodes  # nécessaire uniquement pour le mode triche
 
     def __str__(self):
         return f"AdvancedNode({self.node_id})"
@@ -30,11 +32,20 @@ class AdvancedNode(StorageNode):
         self.env.process(self._create_long_links())
         while True:
             msg = yield self.messages.get()
-            t = msg['type']; c = msg['content']; s = msg['sender']
+            t = msg['type']
+            c = msg['content']
+            s = msg['sender']
+
+            # Mode piggyback : découvrir d'autres nœuds
+            if self.mode == 'piggyback' and s.node_id not in self.long_links:
+                self.long_links[s.node_id] = s
+                print(f"{self.env.now:.1f}: {self} discovered node {s.node_id} via piggybacking")
+
             if t in ['JOIN_REQUEST', 'UPDATE_LEFT', 'UPDATE_RIGHT', 'STORE', 'STORE_CONFIRM', 'REPLICATE']:
                 yield self.env.process(StorageNode.run(self))
             elif t == 'ROUTE':
-                tid = c['target_id']; m = c['message']
+                tid = c['target_id']
+                m = c['message']
                 if self.node_id == tid:
                     print(f"{self.env.now:.1f}: {self} got routed message: {m}")
                 else:
@@ -43,5 +54,13 @@ class AdvancedNode(StorageNode):
 
     def _create_long_links(self):
         yield self.env.timeout(10)
-        self.long_links[self.right_neighbor.node_id] = self.right_neighbor
-        print(f"{self.env.now:.1f}: {self} created long link to {self.right_neighbor}")
+        if self.mode == 'triche' and self.all_nodes:
+            # Ajoute des liens vers des nœuds à +10, +20, +40
+            for offset in [10, 20, 40]:
+                target_id = (self.node_id + offset) % 100
+                for node in self.all_nodes:
+                    if node.node_id == target_id:
+                        self.long_links[node.node_id] = node
+                        print(f"{self.env.now:.1f}: {self} created long link to {node}")
+        elif self.mode == 'piggyback':
+            print(f"{self.env.now:.1f}: {self} will build long links using piggybacking")
