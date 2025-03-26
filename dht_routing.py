@@ -1,6 +1,6 @@
 import simpy
 import random
-from dht_ring import Node  # Importation du code du premier fichier
+from Node import Node  # Importation du code du premier fichier
 
 def run_simulation(duration=100):
     env = simpy.Environment()

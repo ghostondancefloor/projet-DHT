@@ -1,37 +1,43 @@
-import simpy 
-import random 
 import hashlib
+import random
 
 
 class DHTNode:
+    """Represents a node in the DHT network."""
+
     def __init__(self, env, node_id):
         self.env = env
         self.node_id = node_id
-        self.data = {}
-        self.routing_table = {}
-        self.action = env.process(self.run())
-    
+        self.routing_table = {}  
+        self.data_store = {} 
+        self.action = env.process(self.run())  
+
     def run(self):
+        """Simulated process for node activity."""
         while True:
-            yield self.env.timeout(random.randint(1, 5))
-            print(f"[{self.env.now}] Node {self.node_id} is active")
-    
+            yield self.env.timeout(random.randint(1, 5)) 
+            print(f"[{self.env.now}] Node {self.node_id} is running.")
+
+    def send(self, recipient_id, message, dht):
+        """Send a message to a node in the DHT."""
+        recipient = dht.get_node(recipient_id)
+        if recipient:
+            recipient.deliver(self.node_id, message)
+        else:
+            print(f"[{self.env.now}] Node {self.node_id} -> Node {recipient_id} not found!")
+
+    def deliver(self, sender_id, message):
+        """Deliver a message to this node."""
+        print(f"[{self.env.now}] Node {self.node_id} received message from Node {sender_id}: {message.content} (ID: {message.msg_id})")
+
     def store(self, key, value):
-        hashed_key = hashlib.sha1(key.encode()).hexdigest()[:5] 
-        self.data[hashed_key] = value
-        print(f"Node {self.node_id} stored {key} -> {hashed_key}")
-        
+        """Stores a value in the node using a hashed key."""
+        hashed_key = hashlib.sha1(key.encode()).hexdigest()[:8]
+        self.data_store[hashed_key] = value
+        print(f"[{self.env.now}] Node {self.node_id} stored {key} -> {hashed_key}")
+
     def lookup(self, key):
-        hashed_key = hashlib.sha1(key.encode()).hexdigest()[:5]
-        return self.data.get(hashed_key, "Not Found")
-    
-    
-env = simpy.Environment()
+        """Retrieves a value using the hashed key."""
+        hashed_key = hashlib.sha1(key.encode()).hexdigest()[:8]
+        return self.data_store.get(hashed_key, "Not Found")
 
-nodes = [DHTNode(env, i) for i in range(5)]
-
-nodes[0].store("hello", "world")
-
-print("Lookup result:", nodes[0].lookup("hello"))
-
-env.run(until=10)
