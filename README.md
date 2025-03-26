@@ -1,4 +1,4 @@
-# 🧪 DHT Simulator – Python Simulation of Distributed Hash Tables
+# DHT Simulator – Python Simulation of Distributed Hash Tables
 
 A powerful and visual simulator of **Distributed Hash Tables (DHT)** implemented in Python using [SimPy](https://simpy.readthedocs.io/), supporting three simulation modes:
 - **Basic ring topology**
