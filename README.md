@@ -41,11 +41,12 @@ Ce projet simule un réseau **DHT (Distributed Hash Table)** dynamique utilisant
 ### 1. Simulation basique :
 ```bash
 python dht_routing.py
-
+```
 ### 2. Simulation avec stockage :
 ```bash
 python dht_storage.py
-
+```
 ### 3. Simulation avec routage avancé  :
 ```bash
 python dht_advanced_routing.py
+```
