@@ -1,4 +1,4 @@
-from Node import Node 
+from version1.Node import Node 
 import hashlib
 
 class StorageNode(Node):

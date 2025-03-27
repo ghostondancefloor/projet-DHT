@@ -1,7 +1,7 @@
 import simpy
 import random
 import hashlib
-from dht_ring import Node  # Importation du code du premier fichier
+from dht_ring import Node 
 
 class StorageNode(Node):
     """

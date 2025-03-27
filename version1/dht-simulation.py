@@ -12,9 +12,9 @@ import argparse
 import sys
 from enum import Enum
 
-from Node import Node
-from StorageNode import StorageNode
-from AdvancedNode import AdvancedNode
+from version1.Node import Node
+from version1.StorageNode import StorageNode
+from version1.AdvancedNode import AdvancedNode
 
 
 class DemoLevel(Enum):

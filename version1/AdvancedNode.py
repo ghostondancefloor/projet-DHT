@@ -1,4 +1,4 @@
-from StorageNode import StorageNode
+from version1.StorageNode import StorageNode
 
 class AdvancedNode(StorageNode):
     def init(self, env, node_id, all_nodes=None, mode='triche'):

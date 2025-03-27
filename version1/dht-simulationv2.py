@@ -16,9 +16,9 @@ import numpy as np
 
 # --------------------------- DHT NODES TYPES --------------------------- #
 
-from Node import Node
-from StorageNode import StorageNode
-from AdvancedNode import AdvancedNode
+from version1.Node import Node
+from version1.StorageNode import StorageNode
+from version1.AdvancedNode import AdvancedNode
 
 
 # --------------------------- ENUM CONFIG --------------------------- #
