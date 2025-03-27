@@ -46,7 +46,3 @@ python dht_routing.py
 ```bash
 python dht_storage.py
 ```
-### 3. Simulation avec routage avancé  :
-```bash
-python dht_advanced_routing.py
-```
